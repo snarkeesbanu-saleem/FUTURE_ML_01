@@ -5,3 +5,4 @@ plotly
 joblib
 xgboost
 scikit-learn
+statsmodels
