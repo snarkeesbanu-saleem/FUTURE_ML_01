@@ -64,8 +64,7 @@ def load_all_data():
 @st.cache_resource
 def load_model():
     try:
-        model = joblib.load("xgboost_model.pkl")
-        return model
+        return joblib.load("xgboost_model.pkl")
     except:
         return None
 
@@ -117,27 +116,44 @@ def main():
     if model is None:
         st.info("ℹ️ No trained model found. Using simple seasonal forecast.")
 
-    # Sidebar
+    # ==================== ENHANCED SIDEBAR ====================
     st.sidebar.header("🔍 Filters")
+
     with st.sidebar.form(key="filters_form"):
         selected_store = st.selectbox("Store", sorted(train["store_id"].unique()))
         selected_family = st.selectbox("Product Family", sorted(train["family"].unique()))
         horizon = st.slider("Forecast Horizon (days)", 7, 90, 30)
         
-        with st.expander("⚙️ Advanced"):
-            show_ci = st.checkbox("Show confidence intervals", True)
-            analyze_oil = st.checkbox("Oil price correlation", True)
+        # New Features in Sidebar
+        st.subheader("📅 Historical View")
+        hist_days = st.slider("Show last N days of history", 30, 365, 180)
+        
+        st.subheader("⚙️ Options")
+        show_ci = st.checkbox("Show Confidence Interval", value=True)
+        analyze_oil = st.checkbox("Show Oil Price Correlation", value=True)
+        use_xgboost = st.checkbox("Use XGBoost Model", value=True if model is not None else False)
 
-        submitted = st.form_submit_button("Apply Filters")
+        submitted = st.form_submit_button("🚀 Apply Filters & Generate Forecast")
 
     if not submitted:
         selected_store = train["store_id"].iloc[0]
         selected_family = "AUTOMOTIVE"
         horizon = 30
+        hist_days = 180
 
-    df_filtered = train[(train["store_id"] == selected_store) & (train["family"] == selected_family)].copy()
+    # Filter data
+    end_date = train["date"].max()
+    start_date = end_date - timedelta(days=hist_days)
+    
+    df_filtered = train[
+        (train["store_id"] == selected_store) &
+        (train["family"] == selected_family) &
+        (train["date"] >= start_date)
+    ].copy()
 
-    forecast_dates, forecast_values = get_forecast(model, le, df_filtered, horizon, selected_store, selected_family)
+    # Choose model
+    active_model = model if use_xgboost else None
+    forecast_dates, forecast_values = get_forecast(active_model, le, df_filtered, horizon, selected_store, selected_family)
 
     # KPIs
     col1, col2, col3, col4 = st.columns(4)
@@ -146,7 +162,7 @@ def main():
     col3.metric("🎯 Model RMSE", "51.73")
     col4.metric("🔮 Forecast Horizon", f"{horizon} days")
 
-    # Sales Forecast
+    # Sales Forecast Chart
     st.subheader("📈 Sales Forecast")
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df_filtered["date"], y=df_filtered["sales"], name="Actual", line=dict(color="#1E90FF")))
@@ -159,7 +175,7 @@ def main():
     fig.update_layout(height=500, hovermode="x unified", template="plotly_dark")
     st.plotly_chart(fig, use_container_width=True)
 
-    # Advanced Analytics
+    # Advanced Analytics Tabs
     st.subheader("🔬 Advanced Analytics")
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["Holiday Impact", "Oil Price", "Store Performance", "Feature Importance", "Transactions"])
 
@@ -180,19 +196,17 @@ def main():
         fig_store = px.bar(x=store_perf.values, y=store_perf.index, orientation="h", title="Top 5 Stores")
         st.plotly_chart(fig_store, use_container_width=True)
 
-    with tab4:   # ← FEATURE IMPORTANCE FIXED
-        if model is not None:
-            st.success("✅ XGBoost Model Loaded - Feature Importance")
-            feature_names = ['store_id', 'family_encoded', 'onpromotion', 'dcoilwtico', 
-                           'is_holiday', 'dayofweek', 'month', 'year', 'lag_1', 'lag_7']
-            importance = model.feature_importances_
-            imp_df = pd.DataFrame({'Feature': feature_names, 'Importance': importance})
+    with tab4:
+        if model is not None and use_xgboost:
+            st.success("✅ XGBoost Feature Importance")
+            feature_names = ['store_id', 'family_encoded', 'onpromotion', 'dcoilwtico', 'is_holiday',
+                             'dayofweek', 'month', 'year', 'lag_1', 'lag_7']
+            imp_df = pd.DataFrame({'Feature': feature_names, 'Importance': model.feature_importances_})
             imp_df = imp_df.sort_values('Importance', ascending=False)
-            fig_imp = px.bar(imp_df.head(10), x='Importance', y='Feature', orientation='h', 
-                           title="Top 10 Feature Importances", color='Importance')
+            fig_imp = px.bar(imp_df.head(10), x='Importance', y='Feature', orientation='h', title="Top 10 Feature Importances")
             st.plotly_chart(fig_imp, use_container_width=True)
         else:
-            st.info("🔧 Feature Importance will appear after loading XGBoost model.")
+            st.info("🔧 Enable XGBoost in sidebar to see Feature Importance.")
 
     with tab5:
         if transactions is not None:
@@ -214,7 +228,7 @@ def main():
 
     st.warning(f"⚠️ Maintain inventory above **{reorder}** units to avoid stockouts.")
 
-    # Next 7 Days + Download
+    # Next 7 Days & Download
     st.subheader("📅 Next 7 Days Forecast")
     next7 = pd.DataFrame({"Date": forecast_dates[:7], "Forecast Sales": forecast_values[:7]})
     next7["Day of Week"] = next7["Date"].dt.day_name()
