@@ -50,10 +50,16 @@ def load_all_data():
     holidays = load_holidays()
     transactions = load_transactions()
 
+    # Merge data
     train = train.merge(stores, on="store_nbr", how="left")
     train = train.merge(oil, on="date", how="left")
     train.rename(columns={"store_nbr": "store_id"}, inplace=True)
     train["is_holiday"] = train["date"].isin(holidays["date"]).astype(int)
+
+    # Fix for transactions
+    if transactions is not None:
+        transactions.rename(columns={"store_nbr": "store_id"}, inplace=True)
+
     return train, transactions
 
 # ====================== MODELS ======================
@@ -100,7 +106,7 @@ def get_forecast(model, le, df, horizon, store_id, family):
         predictions.append(max(0, float(pred)))
     return future_dates, predictions
 
-# ====================== MAIN ======================
+# ====================== MAIN APP ======================
 def main():
     train, transactions = load_all_data()
     model = load_model()
@@ -115,8 +121,8 @@ def main():
     # Sidebar
     st.sidebar.header("🔍 Filters")
     with st.sidebar.form(key="filters_form"):
-        selected_store = st.selectbox("Store", sorted(train["store_id"].unique()), index=0)
-        selected_family = st.selectbox("Product Family", sorted(train["family"].unique()), index=0)
+        selected_store = st.selectbox("Store", sorted(train["store_id"].unique()))
+        selected_family = st.selectbox("Product Family", sorted(train["family"].unique()))
         horizon = st.slider("Forecast Horizon (days)", 7, 90, 30)
         
         with st.expander("⚙️ Advanced"):
@@ -125,19 +131,14 @@ def main():
 
         submitted = st.form_submit_button("Apply Filters")
 
-    # Default on first load
     if not submitted:
         selected_store = train["store_id"].iloc[0]
         selected_family = "AUTOMOTIVE"
         horizon = 30
 
-    start = train["date"].min()
-    end = train["date"].max()
-
     df_filtered = train[
         (train["store_id"] == selected_store) &
-        (train["family"] == selected_family) &
-        (train["date"] >= start) & (train["date"] <= end)
+        (train["family"] == selected_family)
     ].copy()
 
     forecast_dates, forecast_values = get_forecast(model, le, df_filtered, horizon, selected_store, selected_family)
@@ -149,7 +150,7 @@ def main():
     col3.metric("🎯 Model RMSE", "51.73")
     col4.metric("🔮 Forecast Horizon", f"{horizon} days")
 
-    # Forecast Chart
+    # Sales Forecast Chart
     st.subheader("📈 Sales Forecast")
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df_filtered["date"], y=df_filtered["sales"], name="Actual", line=dict(color="#1E90FF")))
@@ -162,23 +163,21 @@ def main():
     fig.update_layout(height=500, hovermode="x unified", template="plotly_dark")
     st.plotly_chart(fig, use_container_width=True)
 
-    # Advanced Analytics
+    # Advanced Analytics Tabs
     st.subheader("🔬 Advanced Analytics")
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["Holiday Impact", "Oil Price", "Store Performance", "Feature Importance", "Transactions"])
 
     with tab1:
         holiday_group = df_filtered.groupby("is_holiday")["sales"].mean()
-        fig_hol = px.bar(x=holiday_group.index.astype(str), y=holiday_group.values, 
-                        title="Holiday vs Non-Holiday Sales", color=holiday_group.index.astype(str),
-                        color_discrete_map={"0": "#808080", "1": "#FFA500"})
+        fig_hol = px.bar(x=holiday_group.index.astype(str), y=holiday_group.values, title="Holiday vs Non-Holiday Sales", color_discrete_map={"0": "gray", "1": "orange"})
         st.plotly_chart(fig_hol, use_container_width=True)
 
     with tab2:
         if analyze_oil:
-            fig_oil = px.scatter(df_filtered, x="dcoilwtico", y="sales", title="Sales vs Oil Price", trendline="ols")
+            fig_oil = px.scatter(df_filtered, x="dcoilwtico", y="sales", title="Sales vs Oil Price")
             st.plotly_chart(fig_oil, use_container_width=True)
             corr = df_filtered[['sales', 'dcoilwtico']].corr().iloc[0,1]
-            st.metric("Sales vs Oil Price Correlation", f"{corr:.3f}")
+            st.metric("Sales vs Oil Correlation", f"{corr:.3f}")
 
     with tab3:
         store_perf = train.groupby("store_id")["sales"].sum().sort_values(ascending=False).head(5)
@@ -186,7 +185,7 @@ def main():
         st.plotly_chart(fig_store, use_container_width=True)
 
     with tab4:
-        st.info("🔧 Feature Importance coming after full XGBoost integration.")
+        st.info("Feature Importance will be available after full XGBoost training.")
 
     with tab5:
         if transactions is not None:
@@ -194,6 +193,8 @@ def main():
             if not trans_filtered.empty:
                 fig_trans = px.line(trans_filtered, x="date", y="transactions", title=f"Daily Transactions - Store {selected_store}")
                 st.plotly_chart(fig_trans, use_container_width=True)
+            else:
+                st.info("No transaction data available for this store.")
 
     # Inventory
     st.subheader("📦 Inventory Recommendations")
@@ -208,21 +209,17 @@ def main():
 
     st.warning(f"⚠️ Maintain inventory above **{reorder}** units to avoid stockouts.")
 
-    # Next 7 Days
+    # Next 7 Days + Download
     st.subheader("📅 Next 7 Days Forecast")
-    next7 = pd.DataFrame({
-        "Date": forecast_dates[:7],
-        "Forecast Sales": forecast_values[:7]
-    })
+    next7 = pd.DataFrame({"Date": forecast_dates[:7], "Forecast Sales": forecast_values[:7]})
     next7["Day of Week"] = next7["Date"].dt.day_name()
-    st.dataframe(next7.style.highlight_max(color="lightgreen", subset=["Forecast Sales"]), use_container_width=True)
+    st.dataframe(next7.style.highlight_max(subset=["Forecast Sales"], color="lightgreen"), use_container_width=True)
 
-    # Download
     with st.expander("🔍 Drill-down: Full Forecast Table"):
         full = pd.DataFrame({"Date": forecast_dates, "Forecast": forecast_values})
         st.dataframe(full, use_container_width=True)
         csv = full.to_csv(index=False).encode()
-        st.download_button("📥 Download CSV", csv, f"forecast_store{selected_store}_{selected_family}.csv", "text/csv")
+        st.download_button("📥 Download CSV", csv, f"forecast_{selected_store}_{selected_family}.csv", "text/csv")
 
     st.caption(f"Generated at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
