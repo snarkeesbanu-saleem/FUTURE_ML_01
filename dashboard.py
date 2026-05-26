@@ -15,7 +15,6 @@ if "last_update" not in st.session_state:
     st.session_state.last_update = datetime.now()
 
 def find_file(filename):
-    """Look for file in root or in store-sales-time-series-forecasting (2)/ folder."""
     if os.path.exists(filename):
         return filename
     subfolder = f"store-sales-time-series-forecasting (2)/{filename}"
@@ -27,7 +26,7 @@ def find_file(filename):
 def load_train():
     path = find_file("train.csv")
     if path is None:
-        st.error("train.csv not found. Please ensure it is in the root or 'store-sales-time-series-forecasting (2)/' folder.")
+        st.error("train.csv not found.")
         st.stop()
     df = pd.read_csv(path, parse_dates=["date"])
     df["date"] = pd.to_datetime(df["date"])
@@ -49,13 +48,9 @@ def load_oil():
         return pd.DataFrame(columns=["date", "dcoilwtico"])
     oil = pd.read_csv(path, parse_dates=["date"])
     oil["date"] = pd.to_datetime(oil["date"])
-    # Only interpolate if there is at least one non-null value
-    if "dcoilwtico" in oil.columns and oil["dcoilwtico"].notna().any():
-        oil["dcoilwtico"] = oil["dcoilwtico"].interpolate(method="ffill")
-    else:
-        st.warning("Oil price column missing or all null. Skipping interpolation.")
-        if "dcoilwtico" not in oil.columns:
-            oil["dcoilwtico"] = np.nan
+    # No interpolation – keep data as is (may be all NaN)
+    if "dcoilwtico" not in oil.columns:
+        oil["dcoilwtico"] = np.nan
     return oil
 
 @st.cache_data(ttl=3600)
@@ -135,7 +130,6 @@ def get_forecast(model, df, horizon, store_id, family):
     if model is None:
         return seasonal_naive_forecast(df, horizon, store_id, family)
     else:
-        # Replace with your XGBoost prediction logic
         return seasonal_naive_forecast(df, horizon, store_id, family)
 
 def inventory_advice(forecast_values, lead_time=7, safety_factor=1.5):
@@ -246,12 +240,10 @@ def main():
             st.subheader("💰 Transaction Analysis")
             trans_filtered = transactions[transactions["store_id"] == selected_store]
             if not trans_filtered.empty:
-                # Drop existing transactions column to avoid _x/_y suffix
                 temp = df_filtered.copy()
                 if 'transactions' in temp.columns:
                     temp = temp.drop(columns=['transactions'])
                 merged = temp.merge(trans_filtered, on=["date", "store_id"], how="left")
-                # Find the transaction column (might be 'transactions' after clean merge)
                 trans_col = next((col for col in merged.columns if col.startswith('transactions')), None)
                 if trans_col:
                     fig_trans = px.line(merged, x="date", y=trans_col, title=f"Daily Transactions - Store {selected_store}")
