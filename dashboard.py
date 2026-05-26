@@ -14,43 +14,67 @@ st.set_page_config(page_title="Store Sales Forecasting", layout="wide")
 if "last_update" not in st.session_state:
     st.session_state.last_update = datetime.now()
 
-REQUIRED_FILES = ["train.csv", "stores.csv", "oil.csv", "holidays_events.csv"]
+def find_file(filename):
+    if os.path.exists(filename):
+        return filename
+    subfolder = f"store-sales-time-series-forecasting (2)/{filename}"
+    if os.path.exists(subfolder):
+        return subfolder
+    return None
 
 @st.cache_data(ttl=3600)
 def load_train():
-    df = pd.read_csv("train.csv", parse_dates=["date"])
+    path = find_file("train.csv")
+    if path is None:
+        st.error("train.csv not found. Place it in root or 'store-sales-time-series-forecasting (2)/'")
+        st.stop()
+    df = pd.read_csv(path, parse_dates=["date"])
     df["date"] = pd.to_datetime(df["date"])
     return df
 
 @st.cache_data(ttl=3600)
 def load_stores():
-    return pd.read_csv("stores.csv")
+    path = find_file("stores.csv")
+    if path is None:
+        st.error("stores.csv not found.")
+        st.stop()
+    return pd.read_csv(path)
 
 @st.cache_data(ttl=3600)
 def load_oil():
-    oil = pd.read_csv("oil.csv", parse_dates=["date"])
+    path = find_file("oil.csv")
+    if path is None:
+        st.error("oil.csv not found.")
+        st.stop()
+    oil = pd.read_csv(path, parse_dates=["date"])
     oil["date"] = pd.to_datetime(oil["date"])
     oil["dcoilwtico"] = oil["dcoilwtico"].interpolate(method="ffill")
     return oil
 
 @st.cache_data(ttl=3600)
 def load_holidays():
-    hols = pd.read_csv("holidays_events.csv", parse_dates=["date"])
+    path = find_file("holidays_events.csv")
+    if path is None:
+        st.error("holidays_events.csv not found.")
+        st.stop()
+    hols = pd.read_csv(path, parse_dates=["date"])
     hols["date"] = pd.to_datetime(hols["date"])
     return hols
 
 @st.cache_data(ttl=3600)
 def load_test():
-    if os.path.exists("test.csv"):
-        df = pd.read_csv("test.csv", parse_dates=["date"])
+    path = find_file("test.csv")
+    if path:
+        df = pd.read_csv(path, parse_dates=["date"])
         df["date"] = pd.to_datetime(df["date"])
         return df
     return None
 
 @st.cache_data(ttl=3600)
 def load_transactions():
-    if os.path.exists("transactions.csv"):
-        df = pd.read_csv("transactions.csv", parse_dates=["date"])
+    path = find_file("transactions.csv")
+    if path:
+        df = pd.read_csv(path, parse_dates=["date"])
         df["date"] = pd.to_datetime(df["date"])
         return df
     return None
@@ -111,12 +135,6 @@ def inventory_advice(forecast_values, lead_time=7, safety_factor=1.5):
     return reorder, avg, safety
 
 def main():
-    missing = [f for f in REQUIRED_FILES if not os.path.exists(f)]
-    if missing:
-        st.error(f"❌ Missing required files: {', '.join(missing)}")
-        st.markdown("Download them from [Kaggle](https://www.kaggle.com/competitions/store-sales-time-series-forecasting/data) and place in this folder.")
-        st.stop()
-
     st.title("🏬 Store Sales Forecasting Dashboard")
     st.caption(f"Data last loaded: {st.session_state.last_update.strftime('%Y-%m-%d %H:%M')}")
 
@@ -218,7 +236,6 @@ def main():
             trans_filtered = transactions[transactions["store_id"] == selected_store]
             if not trans_filtered.empty:
                 merged = df_filtered.merge(trans_filtered, on=["date", "store_id"], how="left")
-                # Find the correct transaction column (may be 'transactions' or 'transactions_x' etc.)
                 trans_col = next((col for col in merged.columns if col.startswith('transactions')), None)
                 if trans_col:
                     fig_trans = px.line(merged, x="date", y=trans_col, title=f"Daily Transactions - Store {selected_store}")
@@ -227,8 +244,6 @@ def main():
                     if not corr_df.empty:
                         corr = corr_df.corr().iloc[0,1]
                         st.metric("Sales-Transactions Correlation", f"{corr:.2f}")
-                else:
-                    st.warning("Transaction column not found after merge.")
             else:
                 st.info("No transaction data for selected store.")
         else:
