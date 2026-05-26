@@ -15,7 +15,6 @@ if "last_update" not in st.session_state:
     st.session_state.last_update = datetime.now()
 
 def find_file(filename):
-    """Look for file in root or in store-sales-time-series-forecasting (2)/ folder."""
     if os.path.exists(filename):
         return filename
     subfolder = f"store-sales-time-series-forecasting (2)/{filename}"
@@ -27,7 +26,7 @@ def find_file(filename):
 def load_train():
     path = find_file("train.csv")
     if path is None:
-        st.error("train.csv not found. Please ensure it is in the root or 'store-sales-time-series-forecasting (2)/' folder.")
+        st.error("train.csv not found. Place it in root or 'store-sales-time-series-forecasting (2)/'")
         st.stop()
     df = pd.read_csv(path, parse_dates=["date"])
     df["date"] = pd.to_datetime(df["date"])
@@ -45,11 +44,9 @@ def load_stores():
 def load_oil():
     path = find_file("oil.csv")
     if path is None:
-        st.warning("oil.csv not found. Proceeding without oil data.")
         return pd.DataFrame(columns=["date", "dcoilwtico"])
     oil = pd.read_csv(path, parse_dates=["date"])
     oil["date"] = pd.to_datetime(oil["date"])
-    # No interpolation – keep raw data (may be all NaN)
     if "dcoilwtico" not in oil.columns:
         oil["dcoilwtico"] = np.nan
     return oil
@@ -121,18 +118,74 @@ def seasonal_naive_forecast(df, horizon, store_id, family):
 
 @st.cache_resource
 def load_model():
+    """Load XGBoost model if exists, otherwise return None."""
     try:
-        return joblib.load("xgboost_model.pkl")
-    except:
-        st.info("ℹ️ No trained model found. Using simple seasonal forecast.")
+        # Check if file exists
+        if os.path.exists("xgboost_model.pkl"):
+            model = joblib.load("xgboost_model.pkl")
+            st.success("✅ XGBoost model loaded successfully")
+            return model
+        else:
+            st.warning("⚠️ xgboost_model.pkl not found in current directory")
+            return None
+    except Exception as e:
+        st.error(f"Error loading model: {e}")
         return None
 
-def get_forecast(model, df, horizon, store_id, family):
-    if model is None:
-        return seasonal_naive_forecast(df, horizon, store_id, family)
-    else:
-        # Replace with your XGBoost prediction logic when model is available
-        return seasonal_naive_forecast(df, horizon, store_id, family)
+@st.cache_resource
+def load_label_encoder():
+    try:
+        if os.path.exists("label_encoder.pkl"):
+            le = joblib.load("label_encoder.pkl")
+            return le
+        else:
+            return None
+    except:
+        return None
+
+def xgboost_forecast(model, le, df, horizon, store_id, family):
+    """Generate forecast using trained XGBoost model."""
+    # Get last known row (features)
+    last_row = df.iloc[-1:].copy()
+    last_date = df["date"].max()
+    future_dates = [last_date + timedelta(days=i+1) for i in range(horizon)]
+
+    # Create future dataframe by repeating last row
+    future = pd.concat([last_row] * horizon, ignore_index=True)
+    future["date"] = future_dates
+
+    # Add time features
+    future["dayofweek"] = future["date"].dt.dayofweek
+    future["month"] = future["date"].dt.month
+    future["year"] = future["date"].dt.year
+
+    # Encode family
+    try:
+        future["family_encoded"] = le.transform([family])[0]
+    except:
+        # Fallback: if family not seen, use most frequent or 0
+        future["family_encoded"] = 0
+
+    # Lag features: use last known sales (simple approach)
+    last_sales = last_row["sales"].values[0]
+    future["lag_1"] = last_sales
+    future["lag_7"] = last_sales
+
+    # Ensure all required columns exist
+    required_cols = ['store_id', 'family_encoded', 'onpromotion', 'dcoilwtico',
+                     'is_holiday', 'dayofweek', 'month', 'year', 'lag_1', 'lag_7']
+    
+    for col in required_cols:
+        if col not in future.columns:
+            future[col] = 0
+
+    # Use the same features as training (simple version)
+    X_future = future[required_cols]
+    
+    # Make predictions
+    predictions = model.predict(X_future)
+    predictions = np.maximum(predictions, 0)
+    return future_dates, predictions
 
 def inventory_advice(forecast_values, lead_time=7, safety_factor=1.5):
     avg = np.mean(forecast_values)
@@ -144,6 +197,12 @@ def inventory_advice(forecast_values, lead_time=7, safety_factor=1.5):
 def main():
     st.title("🏬 Store Sales Forecasting Dashboard")
     st.caption(f"Data last loaded: {st.session_state.last_update.strftime('%Y-%m-%d %H:%M')}")
+
+    # Debug: show current directory and .pkl files (remove later)
+    with st.expander("🔧 Debug Info (model loading)"):
+        st.write("Current directory:", os.getcwd())
+        pkl_files = [f for f in os.listdir(".") if f.endswith('.pkl')]
+        st.write("Found .pkl files:", pkl_files)
 
     with st.spinner("Loading data..."):
         train, test, transactions = load_all_data()
@@ -183,12 +242,33 @@ def main():
         st.error("No data for these filters.")
         st.stop()
 
+    # Load model and encoder
     model = load_model()
-    forecast_dates, forecast_values = get_forecast(model, df_filtered, horizon, selected_store, selected_family)
+    le = load_label_encoder()
 
+    # Generate forecast
+    if model is not None and le is not None:
+        try:
+            forecast_dates, forecast_values = xgboost_forecast(
+                model, le, df_filtered, horizon, selected_store, selected_family
+            )
+            st.success("✅ Using XGBoost model for forecasts")
+        except Exception as e:
+            st.error(f"XGBoost prediction failed: {e}. Using fallback.")
+            forecast_dates, forecast_values = seasonal_naive_forecast(
+                df_filtered, horizon, selected_store, selected_family
+            )
+            st.info("ℹ️ Using seasonal naive forecast (XGBoost prediction error)")
+    else:
+        forecast_dates, forecast_values = seasonal_naive_forecast(
+            df_filtered, horizon, selected_store, selected_family
+        )
+        st.info("ℹ️ No trained model found. Using simple seasonal forecast.")
+
+    # KPIs
     total_sales = df_filtered["sales"].sum()
     avg_sales = df_filtered["sales"].mean()
-    rmse = 51.73  # Replace with your actual validation metric
+    rmse = 51.73  # Replace with your actual validation RMSE
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("💰 Total Sales", f"${total_sales:,.0f}")
@@ -196,6 +276,7 @@ def main():
     col3.metric("🎯 Model RMSE", f"{rmse:.2f}")
     col4.metric("🔮 Forecast Horizon", f"{horizon} days")
 
+    # Forecast chart
     st.subheader("📈 Sales Forecast")
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df_filtered["date"], y=df_filtered["sales"], mode="lines", name="Actual", line=dict(color="blue")))
@@ -208,6 +289,7 @@ def main():
     fig.update_layout(height=500, hovermode="x unified")
     st.plotly_chart(fig, width='stretch')
 
+    # Advanced analytics tabs
     st.subheader("🔬 Advanced Analytics")
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["Holiday Impact", "Oil Price", "Store Performance", "Feature Importance", "Transactions"])
 
@@ -235,7 +317,21 @@ def main():
         st.plotly_chart(fig_fam, width='stretch')
 
     with tab4:
-        st.info("📊 Feature importance will appear after you integrate your XGBoost model. Save your trained model as 'xgboost_model.pkl' and replace the forecast function to see feature importances.")
+        if model is not None and hasattr(model, 'feature_importances_'):
+            # Load feature names (or use default)
+            try:
+                with open("feature_names.txt", "r") as f:
+                    feature_names = f.read().strip().split(',')
+            except:
+                feature_names = [f"Feature_{i}" for i in range(len(model.feature_importances_))]
+            imp_df = pd.DataFrame({
+                "feature": feature_names[:len(model.feature_importances_)],
+                "importance": model.feature_importances_
+            }).sort_values("importance", ascending=False).head(10)
+            fig_imp = px.bar(imp_df, x="importance", y="feature", orientation="h", title="Top 10 Feature Importances", color="importance", color_continuous_scale="blues")
+            st.plotly_chart(fig_imp, width='stretch')
+        else:
+            st.info("📊 Feature importance will appear after your XGBoost model is loaded correctly. Check the debug info to ensure 'xgboost_model.pkl' is present.")
 
     with tab5:
         if transactions is not None:
@@ -259,6 +355,7 @@ def main():
         else:
             st.info("transactions.csv not available.")
 
+    # Inventory
     st.subheader("📦 Inventory Recommendations")
     reorder_point, avg_daily, safety = inventory_advice(forecast_values)
     col_a, col_b, col_c = st.columns(3)
@@ -267,17 +364,20 @@ def main():
     col_c.metric("Avg Daily Forecast", f"{avg_daily:.1f}")
     st.warning(f"⚠️ Maintain inventory above **{int(reorder_point)}** units to avoid stockouts.")
 
+    # Next 7 days
     st.subheader("📅 Next 7 Days Forecast")
     next_7 = pd.DataFrame({"Date": forecast_dates[:7], "Forecast Sales": forecast_values[:7]})
     next_7["Day of Week"] = next_7["Date"].dt.day_name()
     st.dataframe(next_7.style.highlight_max(color="lightgreen", subset=["Forecast Sales"]), width='stretch')
 
+    # Export
     with st.expander("🔍 Drill‑down: Full Forecast Table"):
         full = pd.DataFrame({"Date": forecast_dates, "Forecast": forecast_values})
         st.dataframe(full, width='stretch')
         csv = full.to_csv(index=False).encode("utf-8")
         st.download_button("📥 Download CSV", csv, "forecast.csv", "text/csv")
 
+    # Test data viewer
     if test is not None:
         with st.expander("🔮 Test Data (Kaggle Submission)"):
             st.write(f"Test set contains {len(test)} rows.")
