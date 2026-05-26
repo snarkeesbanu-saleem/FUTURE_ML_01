@@ -123,7 +123,6 @@ def load_model_and_encoder():
     try:
         if os.path.exists("xgboost_model.pkl"):
             model = joblib.load("xgboost_model.pkl")
-            st.success("✅ XGBoost model loaded")
         else:
             st.warning("xgboost_model.pkl not found")
     except Exception as e:
@@ -147,13 +146,13 @@ def xgboost_forecast(model, le, df, horizon, family):
     # Encode family
     try:
         future["family_encoded"] = le.transform([family])[0]
-    except:
-        future["family_encoded"] = 0
+    except Exception as e:
+        raise ValueError(f"Family encoding failed: {e}. Family '{family}' not in encoder.")
     # Simple lags
     last_sales = last_row["sales"].values[0]
     future["lag_1"] = last_sales
     future["lag_7"] = last_sales
-    # Required features
+    # Required features (must match training)
     required = ['store_id', 'family_encoded', 'onpromotion', 'dcoilwtico',
                 'is_holiday', 'dayofweek', 'month', 'year', 'lag_1', 'lag_7']
     for col in required:
@@ -175,7 +174,7 @@ def main():
     st.title("🏬 Store Sales Forecasting Dashboard")
     st.caption(f"Data last loaded: {st.session_state.last_update.strftime('%Y-%m-%d %H:%M')}")
 
-    # Load model and encoder once
+    # Load model and encoder
     model, le = load_model_and_encoder()
 
     with st.spinner("Loading data..."):
@@ -216,17 +215,21 @@ def main():
         st.error("No data for these filters.")
         st.stop()
 
-    # Generate forecast
+    # Try XGBoost forecast, fallback to seasonal naive
+    forecast_success = False
+    error_msg = None
     if model is not None and le is not None:
         try:
             forecast_dates, forecast_values = xgboost_forecast(model, le, df_filtered, horizon, selected_family)
+            forecast_success = True
             st.success("🚀 Using XGBoost model for forecasts")
         except Exception as e:
-            st.error(f"XGBoost failed: {e}. Using fallback.")
+            error_msg = str(e)
+            st.error(f"XGBoost forecast failed: {error_msg}. Falling back to seasonal naive.")
             forecast_dates, forecast_values = seasonal_naive_forecast(df_filtered, horizon)
     else:
         forecast_dates, forecast_values = seasonal_naive_forecast(df_filtered, horizon)
-        st.info("ℹ️ Using seasonal naive forecast (no XGBoost model)")
+        st.info("ℹ️ Using seasonal naive forecast (XGBoost model not available)")
 
     # KPIs
     total_sales = df_filtered["sales"].sum()
@@ -281,7 +284,6 @@ def main():
 
     with tab4:
         if model is not None and hasattr(model, 'feature_importances_'):
-            # Try to load feature names
             try:
                 with open("feature_names.txt", "r") as f:
                     fnames = f.read().strip().split(',')
@@ -292,7 +294,7 @@ def main():
             fig_imp = px.bar(imp_df, x="importance", y="feature", orientation="h", title="Top 10 Feature Importances", color="importance", color_continuous_scale="blues")
             st.plotly_chart(fig_imp, width='stretch')
         else:
-            st.info("Feature importance will appear when XGBoost model is loaded.")
+            st.info("Feature importance will appear when XGBoost model is loaded and used.")
 
     with tab5:
         if transactions is not None:
