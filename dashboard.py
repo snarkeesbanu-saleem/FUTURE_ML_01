@@ -45,17 +45,15 @@ def load_oil():
     path = find_file("oil.csv")
     if path is None:
         st.warning("oil.csv not found. Proceeding without oil data.")
-        # Return an empty DataFrame with just the date column (to avoid merge errors)
         return pd.DataFrame(columns=["date", "dcoilwtico"])
     oil = pd.read_csv(path, parse_dates=["date"])
     oil["date"] = pd.to_datetime(oil["date"])
-    # Check if 'dcoilwtico' exists and has data
-    if "dcoilwtico" in oil.columns and not oil["dcoilwtico"].isna().all():
+    if "dcoilwtico" in oil.columns and oil["dcoilwtico"].notna().any():
         oil["dcoilwtico"] = oil["dcoilwtico"].interpolate(method="ffill")
     else:
-        st.warning("Oil price column missing or all null. Skipping oil interpolation.")
-        # Add dummy column to avoid later errors
-        oil["dcoilwtico"] = np.nan
+        st.warning("Oil price column missing or all null. Skipping interpolation.")
+        if "dcoilwtico" not in oil.columns:
+            oil["dcoilwtico"] = np.nan
     return oil
 
 @st.cache_data(ttl=3600)
@@ -95,8 +93,6 @@ def load_all_data():
     transactions = load_transactions()
 
     train = train.merge(stores, on="store_nbr", how="left")
-    
-    # Merge oil only if oil DataFrame has data
     if not oil.empty and "dcoilwtico" in oil.columns:
         train = train.merge(oil, on="date", how="left")
     else:
