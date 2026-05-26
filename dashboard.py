@@ -17,7 +17,7 @@ if "last_update" not in st.session_state:
 
 DATA_FOLDER = "store-sales-time-series-forecasting (2)"
 
-# ====================== DATA LOADING ======================
+# ====================== LOAD DATA ======================
 @st.cache_data(ttl=3600)
 def load_train():
     return pd.read_csv(f"{DATA_FOLDER}/train.csv", parse_dates=["date"])
@@ -64,11 +64,8 @@ def load_all_data():
 @st.cache_resource
 def load_model():
     try:
-        model = joblib.load("xgboost_model.pkl")
-        st.success("✅ XGBoost Model Loaded Successfully!")
-        return model
+        return joblib.load("xgboost_model.pkl")
     except:
-        st.warning("⚠️ XGBoost model not found. Using Seasonal Forecast.")
         return None
 
 @st.cache_resource
@@ -79,47 +76,36 @@ def load_label_encoder():
         return None
 
 def get_forecast(model, le, df, horizon, store_id, family):
-    """Improved Forecast Function"""
-    if len(df) == 0:
-        dates = [datetime.now() + timedelta(days=i) for i in range(horizon)]
-        return dates, [100] * horizon
+    if model is None or le is None or len(df) == 0:
+        hist = df['sales'].tail(60).values
+        last_week = hist[-7:] if len(hist) >= 7 else [df['sales'].mean()] if len(df)>0 else [100]
+        forecast = [float(last_week[i % len(last_week)]) for i in range(horizon)]
+        dates = [df["date"].max() + timedelta(days=i+1) for i in range(horizon)]
+        return dates, forecast
 
-    # Use XGBoost if available
-    if model is not None and le is not None:
-        try:
-            last_row = df.iloc[-1]
-            last_sales = float(last_row['sales'])
-            last_date = df['date'].max()
+    # XGBoost
+    last_row = df.iloc[-1]
+    last_sales = float(last_row['sales'])
+    last_date = df['date'].max()
+    try:
+        family_encoded = le.transform([family])[0]
+    except:
+        family_encoded = 0
 
-            family_encoded = le.transform([family])[0] if family in le.classes_ else 0
+    future_dates = [last_date + timedelta(days=i+1) for i in range(horizon)]
+    predictions = []
+    for future_date in future_dates:
+        features = np.array([[store_id, family_encoded,
+                              int(last_row.get('onpromotion', 0)),
+                              float(last_row.get('dcoilwtico', 0)),
+                              int(last_row.get('is_holiday', 0)),
+                              future_date.weekday(), future_date.month, future_date.year,
+                              last_sales, last_sales]])
+        pred = model.predict(features)[0]
+        predictions.append(max(0.1, float(pred)))
+    return future_dates, predictions
 
-            future_dates = [last_date + timedelta(days=i+1) for i in range(horizon)]
-            predictions = []
-            for future_date in future_dates:
-                features = np.array([[store_id, family_encoded,
-                                      int(last_row.get('onpromotion', 0)),
-                                      float(last_row.get('dcoilwtico', 0)),
-                                      int(last_row.get('is_holiday', 0)),
-                                      future_date.weekday(), future_date.month, future_date.year,
-                                      last_sales, last_sales]])
-                pred = model.predict(features)[0]
-                predictions.append(max(0.1, float(pred)))
-            return future_dates, predictions
-        except:
-            pass  # Fall back to seasonal
-
-    # Improved Seasonal Naive Forecast
-    hist = df['sales'].tail(60).values
-    if len(hist) == 0:
-        hist = [100]
-
-    last_week = hist[-7:] if len(hist) >= 7 else hist
-    forecast = [float(last_week[i % len(last_week)]) for i in range(horizon)]
-    forecast_dates = [df["date"].max() + timedelta(days=i+1) for i in range(horizon)]
-    
-    return forecast_dates, forecast
-
-# ====================== MAIN ======================
+# ====================== MAIN DASHBOARD ======================
 def main():
     train, transactions = load_all_data()
     model = load_model()
@@ -128,11 +114,14 @@ def main():
     st.title("🏬 Store Sales Forecasting Dashboard")
     st.caption(f"Data last loaded: {st.session_state.last_update.strftime('%Y-%m-%d %H:%M')}")
 
+    if model is None:
+        st.info("ℹ️ No trained model found. Using simple seasonal forecast.")
+
     # Sidebar
     st.sidebar.header("🔍 Filters")
     with st.sidebar.form(key="filters_form"):
-        selected_store = st.selectbox("Store", sorted(train["store_id"].unique()))
-        selected_family = st.selectbox("Product Family", sorted(train["family"].unique()))
+        selected_store = st.selectbox("Store", sorted(train["store_id"].unique()), index=0)
+        selected_family = st.selectbox("Product Family", sorted(train["family"].unique()), index=0)
         horizon = st.slider("Forecast Horizon (days)", 7, 90, 30)
         
         with st.expander("⚙️ Advanced"):
@@ -146,10 +135,7 @@ def main():
         selected_family = "AUTOMOTIVE"
         horizon = 30
 
-    df_filtered = train[
-        (train["store_id"] == selected_store) &
-        (train["family"] == selected_family)
-    ].copy()
+    df_filtered = train[(train["store_id"] == selected_store) & (train["family"] == selected_family)].copy()
 
     forecast_dates, forecast_values = get_forecast(model, le, df_filtered, horizon, selected_store, selected_family)
 
@@ -160,7 +146,7 @@ def main():
     col3.metric("🎯 Model RMSE", "51.73")
     col4.metric("🔮 Forecast Horizon", f"{horizon} days")
 
-    # Forecast Chart
+    # Sales Forecast Chart
     st.subheader("📈 Sales Forecast")
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df_filtered["date"], y=df_filtered["sales"], name="Actual", line=dict(color="#1E90FF")))
@@ -173,13 +159,15 @@ def main():
     fig.update_layout(height=500, hovermode="x unified", template="plotly_dark")
     st.plotly_chart(fig, use_container_width=True)
 
-    # Advanced Tabs (same as before)
+    # Advanced Analytics
     st.subheader("🔬 Advanced Analytics")
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["Holiday Impact", "Oil Price", "Store Performance", "Feature Importance", "Transactions"])
 
     with tab1:
         holiday_group = df_filtered.groupby("is_holiday")["sales"].mean()
-        fig_hol = px.bar(x=holiday_group.index.astype(str), y=holiday_group.values, title="Holiday vs Non-Holiday Sales", color_discrete_map={"0": "gray", "1": "orange"})
+        fig_hol = px.bar(x=holiday_group.index.astype(str), y=holiday_group.values, 
+                        title="Holiday vs Non-Holiday Sales", color=holiday_group.index.astype(str),
+                        color_discrete_map={"0": "#808080", "1": "#FFA500"})
         st.plotly_chart(fig_hol, use_container_width=True)
 
     with tab2:
@@ -195,7 +183,7 @@ def main():
         st.plotly_chart(fig_store, use_container_width=True)
 
     with tab4:
-        st.info("Feature Importance will be available after full XGBoost training.")
+        st.info("🔧 Feature Importance will appear after full XGBoost model training with feature names.")
 
     with tab5:
         if transactions is not None:
@@ -204,7 +192,7 @@ def main():
                 fig_trans = px.line(trans_filtered, x="date", y="transactions", title=f"Daily Transactions - Store {selected_store}")
                 st.plotly_chart(fig_trans, use_container_width=True)
 
-    # Inventory - Now Fixed
+    # Inventory
     st.subheader("📦 Inventory Recommendations")
     avg_fc = np.mean(forecast_values)
     safety = 1.65 * np.std(forecast_values) * np.sqrt(7) if np.std(forecast_values) > 0 else 5
@@ -222,6 +210,17 @@ def main():
     next7 = pd.DataFrame({"Date": forecast_dates[:7], "Forecast Sales": forecast_values[:7]})
     next7["Day of Week"] = next7["Date"].dt.day_name()
     st.dataframe(next7.style.highlight_max(subset=["Forecast Sales"], color="lightgreen"), use_container_width=True)
+
+    # Drill-down + Download
+    with st.expander("🔍 Drill-down: Full Forecast Table"):
+        full = pd.DataFrame({"Date": forecast_dates, "Forecast": forecast_values})
+        st.dataframe(full, use_container_width=True)
+        csv = full.to_csv(index=False).encode()
+        st.download_button("📥 Download CSV", csv, f"forecast_store{selected_store}_{selected_family}.csv", "text/csv")
+
+    # Test Data Section
+    st.subheader("Test Data (Kaggle Submission)")
+    st.info("Test set contains many rows (for submission).")
 
     st.caption(f"Generated at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
