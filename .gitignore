@@ -1,0 +1,12 @@
+# Ignore all CSV data files
+*.csv
+
+# Ignore trained model if any
+*.pkl
+
+# Ignore Python cache
+__pycache__/
+*.pyc
+
+# Ignore Streamlit secrets (if you create any)
+.streamlit/secrets.toml
