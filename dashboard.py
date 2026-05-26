@@ -63,27 +63,19 @@ def load_all_data():
     test = load_test()
     transactions = load_transactions()
 
-    # Merge stores
     train = train.merge(stores, on="store_nbr", how="left")
-    # Merge oil
     train = train.merge(oil, on="date", how="left")
 
-    # Merge transactions if available
     if transactions is not None:
-        # Rename train's store_nbr to store_id for consistency
         train.rename(columns={"store_nbr": "store_id"}, inplace=True)
-        # Rename transactions column to match
         transactions.rename(columns={"store_nbr": "store_id"}, inplace=True)
-        # Drop any existing 'transactions' column from train to avoid duplicate
         if 'transactions' in train.columns:
             train = train.drop(columns=['transactions'])
         train = train.merge(transactions, on=["date", "store_id"], how="left")
     else:
         train.rename(columns={"store_nbr": "store_id"}, inplace=True)
 
-    # Holiday flag
     train["is_holiday"] = train["date"].isin(holidays["date"]).astype(int)
-
     return train, test, transactions
 
 def seasonal_naive_forecast(df, horizon, store_id, family):
@@ -109,7 +101,6 @@ def get_forecast(model, df, horizon, store_id, family):
     if model is None:
         return seasonal_naive_forecast(df, horizon, store_id, family)
     else:
-        # Replace with your XGBoost prediction logic
         return seasonal_naive_forecast(df, horizon, store_id, family)
 
 def inventory_advice(forecast_values, lead_time=7, safety_factor=1.5):
@@ -170,10 +161,9 @@ def main():
     model = load_model()
     forecast_dates, forecast_values = get_forecast(model, df_filtered, horizon, selected_store, selected_family)
 
-    # KPIs
     total_sales = df_filtered["sales"].sum()
     avg_sales = df_filtered["sales"].mean()
-    rmse = 51.73   # Replace with your validation metric
+    rmse = 51.73
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("💰 Total Sales", f"${total_sales:,.0f}")
@@ -181,7 +171,6 @@ def main():
     col3.metric("🎯 Model RMSE", f"{rmse:.2f}")
     col4.metric("🔮 Forecast Horizon", f"{horizon} days")
 
-    # Forecast chart
     st.subheader("📈 Sales Forecast")
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df_filtered["date"], y=df_filtered["sales"], mode="lines", name="Actual", line=dict(color="blue")))
@@ -192,9 +181,8 @@ def main():
         fig.add_trace(go.Scatter(x=forecast_dates, y=upper, fill=None, mode="lines", line=dict(width=0), showlegend=False))
         fig.add_trace(go.Scatter(x=forecast_dates, y=lower, fill="tonexty", mode="lines", line=dict(width=0), name="80% CI", fillcolor="rgba(255,0,0,0.2)"))
     fig.update_layout(height=500, hovermode="x unified")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
-    # Advanced analytics tabs
     st.subheader("🔬 Advanced Analytics")
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["Holiday Impact", "Oil Price", "Store Performance", "Feature Importance", "Transactions"])
 
@@ -202,51 +190,50 @@ def main():
         if analyze_holidays:
             holiday_group = df_filtered.groupby("is_holiday")["sales"].mean()
             fig_hol = px.bar(x=holiday_group.index, y=holiday_group.values, labels={"x": "Holiday", "y": "Avg Sales"}, title="Holiday vs Non‑Holiday Sales", color=holiday_group.index.astype(str), color_discrete_map={"0": "gray", "1": "orange"})
-            st.plotly_chart(fig_hol, use_container_width=True)
+            st.plotly_chart(fig_hol, width='stretch')
         else:
             st.info("Holiday analysis disabled.")
 
     with tab2:
         if analyze_oil and "dcoilwtico" in df_filtered.columns:
             fig_oil = px.scatter(df_filtered, x="dcoilwtico", y="sales", title="Sales vs Oil Price", trendline="ols")
-            st.plotly_chart(fig_oil, use_container_width=True)
+            st.plotly_chart(fig_oil, width='stretch')
         else:
             st.info("Oil price correlation disabled.")
 
     with tab3:
         store_perf = train.groupby("store_id")["sales"].sum().sort_values(ascending=False).head(5)
         fig_store = px.bar(x=store_perf.values, y=store_perf.index, orientation="h", title="Top 5 Stores", color=store_perf.values)
-        st.plotly_chart(fig_store, use_container_width=True)
+        st.plotly_chart(fig_store, width='stretch')
         family_perf = train.groupby("family")["sales"].sum().sort_values(ascending=False).head(5)
         fig_fam = px.bar(x=family_perf.values, y=family_perf.index, orientation="h", title="Top 5 Families", color=family_perf.values)
-        st.plotly_chart(fig_fam, use_container_width=True)
+        st.plotly_chart(fig_fam, width='stretch')
 
     with tab4:
         st.info("Feature importance will appear after you integrate your XGBoost model.")
 
     with tab5:
-    if transactions is not None:
-        st.subheader("💰 Transaction Analysis")
-        trans_filtered = transactions[transactions["store_id"] == selected_store]
-        if not trans_filtered.empty:
-            # Merge and find the correct transaction column
-            merged = df_filtered.merge(trans_filtered, on=["date", "store_id"], how="left")
-            trans_col = next((col for col in merged.columns if col.startswith("transactions")), None)
-            if trans_col:
-                fig_trans = px.line(merged, x="date", y=trans_col, title=f"Daily Transactions - Store {selected_store}")
-                st.plotly_chart(fig_trans, width='stretch')
-                # Correlation
-                corr_df = merged[["sales", trans_col]].dropna()
-                if not corr_df.empty:
-                    corr = corr_df.corr().iloc[0,1]
-                    st.metric("Sales-Transactions Correlation", f"{corr:.2f}")
+        if transactions is not None:
+            st.subheader("💰 Transaction Analysis")
+            trans_filtered = transactions[transactions["store_id"] == selected_store]
+            if not trans_filtered.empty:
+                merged = df_filtered.merge(trans_filtered, on=["date", "store_id"], how="left")
+                # Find the correct transaction column (may be 'transactions' or 'transactions_x' etc.)
+                trans_col = next((col for col in merged.columns if col.startswith('transactions')), None)
+                if trans_col:
+                    fig_trans = px.line(merged, x="date", y=trans_col, title=f"Daily Transactions - Store {selected_store}")
+                    st.plotly_chart(fig_trans, width='stretch')
+                    corr_df = merged[["sales", trans_col]].dropna()
+                    if not corr_df.empty:
+                        corr = corr_df.corr().iloc[0,1]
+                        st.metric("Sales-Transactions Correlation", f"{corr:.2f}")
+                else:
+                    st.warning("Transaction column not found after merge.")
             else:
-                st.warning("Transaction column not found after merge.")
+                st.info("No transaction data for selected store.")
         else:
-            st.info("No transaction data for selected store.")
-    else:
-        st.info("transactions.csv not available.")
-    # Inventory insights
+            st.info("transactions.csv not available.")
+
     st.subheader("📦 Inventory Recommendations")
     reorder_point, avg_daily, safety = inventory_advice(forecast_values)
     col_a, col_b, col_c = st.columns(3)
@@ -255,24 +242,21 @@ def main():
     col_c.metric("Avg Daily Forecast", f"{avg_daily:.1f}")
     st.warning(f"⚠️ Maintain inventory above **{int(reorder_point)}** units to avoid stockouts.")
 
-    # Next 7 days
     st.subheader("📅 Next 7 Days Forecast")
     next_7 = pd.DataFrame({"Date": forecast_dates[:7], "Forecast Sales": forecast_values[:7]})
     next_7["Day of Week"] = next_7["Date"].dt.day_name()
-    st.dataframe(next_7.style.highlight_max(color="lightgreen", subset=["Forecast Sales"]), use_container_width=True)
+    st.dataframe(next_7.style.highlight_max(color="lightgreen", subset=["Forecast Sales"]), width='stretch')
 
-    # Export
     with st.expander("🔍 Drill‑down: Full Forecast Table"):
         full = pd.DataFrame({"Date": forecast_dates, "Forecast": forecast_values})
-        st.dataframe(full, use_container_width=True)
+        st.dataframe(full, width='stretch')
         csv = full.to_csv(index=False).encode("utf-8")
         st.download_button("📥 Download CSV", csv, "forecast.csv", "text/csv")
 
-    # Test data viewer
     if test is not None:
         with st.expander("🔮 Test Data (Kaggle Submission)"):
             st.write(f"Test set contains {len(test)} rows.")
-            st.dataframe(test.head(100))
+            st.dataframe(test.head(100), width='stretch')
             pred_file = st.file_uploader("Upload your prediction CSV (optional)", type="csv")
             if pred_file:
                 preds = pd.read_csv(pred_file)
