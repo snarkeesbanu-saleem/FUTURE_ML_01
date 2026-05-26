@@ -15,6 +15,7 @@ if "last_update" not in st.session_state:
     st.session_state.last_update = datetime.now()
 
 def find_file(filename):
+    """Look for file in root or in store-sales-time-series-forecasting (2)/ folder."""
     if os.path.exists(filename):
         return filename
     subfolder = f"store-sales-time-series-forecasting (2)/{filename}"
@@ -26,7 +27,7 @@ def find_file(filename):
 def load_train():
     path = find_file("train.csv")
     if path is None:
-        st.error("train.csv not found.")
+        st.error("train.csv not found. Please ensure it is in the root or 'store-sales-time-series-forecasting (2)/' folder.")
         st.stop()
     df = pd.read_csv(path, parse_dates=["date"])
     df["date"] = pd.to_datetime(df["date"])
@@ -48,7 +49,7 @@ def load_oil():
         return pd.DataFrame(columns=["date", "dcoilwtico"])
     oil = pd.read_csv(path, parse_dates=["date"])
     oil["date"] = pd.to_datetime(oil["date"])
-    # No interpolation – keep data as is (may be all NaN)
+    # No interpolation – keep raw data (may be all NaN)
     if "dcoilwtico" not in oil.columns:
         oil["dcoilwtico"] = np.nan
     return oil
@@ -130,6 +131,7 @@ def get_forecast(model, df, horizon, store_id, family):
     if model is None:
         return seasonal_naive_forecast(df, horizon, store_id, family)
     else:
+        # Replace with your XGBoost prediction logic when model is available
         return seasonal_naive_forecast(df, horizon, store_id, family)
 
 def inventory_advice(forecast_values, lead_time=7, safety_factor=1.5):
@@ -186,7 +188,7 @@ def main():
 
     total_sales = df_filtered["sales"].sum()
     avg_sales = df_filtered["sales"].mean()
-    rmse = 51.73
+    rmse = 51.73  # Replace with your actual validation metric
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("💰 Total Sales", f"${total_sales:,.0f}")
@@ -233,7 +235,7 @@ def main():
         st.plotly_chart(fig_fam, width='stretch')
 
     with tab4:
-        st.info("Feature importance will appear after you integrate your XGBoost model.")
+        st.info("📊 Feature importance will appear after you integrate your XGBoost model. Save your trained model as 'xgboost_model.pkl' and replace the forecast function to see feature importances.")
 
     with tab5:
         if transactions is not None:
