@@ -1,0 +1,1 @@
+store_nbr,family_encoded,onpromotion,dcoilwtico,is_holiday,dayofweek,month,year,lag_1,lag_7
