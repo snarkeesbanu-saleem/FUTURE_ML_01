@@ -48,6 +48,7 @@ def load_oil():
         return pd.DataFrame(columns=["date", "dcoilwtico"])
     oil = pd.read_csv(path, parse_dates=["date"])
     oil["date"] = pd.to_datetime(oil["date"])
+    # Only interpolate if there is at least one non-null value
     if "dcoilwtico" in oil.columns and oil["dcoilwtico"].notna().any():
         oil["dcoilwtico"] = oil["dcoilwtico"].interpolate(method="ffill")
     else:
