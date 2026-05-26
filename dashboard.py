@@ -15,6 +15,7 @@ if "last_update" not in st.session_state:
     st.session_state.last_update = datetime.now()
 
 def find_file(filename):
+    """Look for file in root or in store-sales-time-series-forecasting (2)/ folder."""
     if os.path.exists(filename):
         return filename
     subfolder = f"store-sales-time-series-forecasting (2)/{filename}"
@@ -26,7 +27,7 @@ def find_file(filename):
 def load_train():
     path = find_file("train.csv")
     if path is None:
-        st.error("train.csv not found. Place it in root or 'store-sales-time-series-forecasting (2)/'")
+        st.error("train.csv not found. Please ensure it is in the root or 'store-sales-time-series-forecasting (2)/' folder.")
         st.stop()
     df = pd.read_csv(path, parse_dates=["date"])
     df["date"] = pd.to_datetime(df["date"])
@@ -134,6 +135,7 @@ def get_forecast(model, df, horizon, store_id, family):
     if model is None:
         return seasonal_naive_forecast(df, horizon, store_id, family)
     else:
+        # Replace with your XGBoost prediction logic
         return seasonal_naive_forecast(df, horizon, store_id, family)
 
 def inventory_advice(forecast_values, lead_time=7, safety_factor=1.5):
@@ -244,7 +246,12 @@ def main():
             st.subheader("💰 Transaction Analysis")
             trans_filtered = transactions[transactions["store_id"] == selected_store]
             if not trans_filtered.empty:
-                merged = df_filtered.merge(trans_filtered, on=["date", "store_id"], how="left")
+                # Drop existing transactions column to avoid _x/_y suffix
+                temp = df_filtered.copy()
+                if 'transactions' in temp.columns:
+                    temp = temp.drop(columns=['transactions'])
+                merged = temp.merge(trans_filtered, on=["date", "store_id"], how="left")
+                # Find the transaction column (might be 'transactions' after clean merge)
                 trans_col = next((col for col in merged.columns if col.startswith('transactions')), None)
                 if trans_col:
                     fig_trans = px.line(merged, x="date", y=trans_col, title=f"Daily Transactions - Store {selected_store}")
