@@ -225,32 +225,27 @@ def main():
         st.info("Feature importance will appear after you integrate your XGBoost model.")
 
     with tab5:
-        if transactions is not None:
-            st.subheader("💰 Transaction Analysis")
-            trans_filtered = transactions[transactions["store_id"] == selected_store]
-            if not trans_filtered.empty:
-                # Make a copy of df_filtered and drop the existing 'transactions' column to avoid suffix duplication
-                merged = df_filtered.copy()
-                if 'transactions' in merged.columns:
-                    merged = merged.drop(columns=['transactions'])
-                merged = merged.merge(trans_filtered, on=["date", "store_id"], how="left")
-                if 'transactions' in merged.columns:
-                    fig_trans = px.line(merged, x="date", y="transactions", title=f"Daily Transactions - Store {selected_store}")
-                    st.plotly_chart(fig_trans, use_container_width=True)
-                    # Compute correlation after dropping nulls
-                    trans_sales = merged[['sales', 'transactions']].dropna()
-                    if not trans_sales.empty:
-                        corr = trans_sales.corr().iloc[0,1]
-                        st.metric("Sales-Transactions Correlation", f"{corr:.2f}")
-                    else:
-                        st.info("Not enough overlapping data to compute correlation.")
-                else:
-                    st.warning("Transaction column not found after merge (debug: check column names).")
+    if transactions is not None:
+        st.subheader("💰 Transaction Analysis")
+        trans_filtered = transactions[transactions["store_id"] == selected_store]
+        if not trans_filtered.empty:
+            # Merge and find the correct transaction column
+            merged = df_filtered.merge(trans_filtered, on=["date", "store_id"], how="left")
+            trans_col = next((col for col in merged.columns if col.startswith("transactions")), None)
+            if trans_col:
+                fig_trans = px.line(merged, x="date", y=trans_col, title=f"Daily Transactions - Store {selected_store}")
+                st.plotly_chart(fig_trans, width='stretch')
+                # Correlation
+                corr_df = merged[["sales", trans_col]].dropna()
+                if not corr_df.empty:
+                    corr = corr_df.corr().iloc[0,1]
+                    st.metric("Sales-Transactions Correlation", f"{corr:.2f}")
             else:
-                st.info("No transaction data for selected store.")
+                st.warning("Transaction column not found after merge.")
         else:
-            st.info("transactions.csv not available.")
-
+            st.info("No transaction data for selected store.")
+    else:
+        st.info("transactions.csv not available.")
     # Inventory insights
     st.subheader("📦 Inventory Recommendations")
     reorder_point, avg_daily, safety = inventory_advice(forecast_values)
