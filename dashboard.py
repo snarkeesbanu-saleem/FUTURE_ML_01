@@ -106,84 +106,88 @@ def load_all_data():
     return train, test, transactions
 
 @st.cache_resource
-def load_model_and_encoder():
+def load_model():
     try:
-        model = joblib.load("xgboost_model.pkl") if os.path.exists("xgboost_model.pkl") else None
-        le = joblib.load("label_encoder.pkl") if os.path.exists("label_encoder.pkl") else None
-        return model, le
+        model = joblib.load("xgboost_model.pkl")
+        return model
     except Exception as e:
-        st.error(f"Error loading model: {e}")
-        return None, None
+        st.warning(f"Could not load XGBoost model: {e}")
+        return None
 
-def make_forecast(model, le, df, horizon, store_id, family):
-    """Generate forecast using XGBoost"""
-    # Get last known values
-    last_row = df.iloc[-1:].copy()
-    last_date = df["date"].max()
-    future_dates = [last_date + timedelta(days=i+1) for i in range(horizon)]
+@st.cache_resource
+def load_encoder():
+    try:
+        le = joblib.load("label_encoder.pkl")
+        return le
+    except:
+        return None
+
+def seasonal_naive_forecast(df, horizon):
+    hist = df.tail(60)["sales"].values
+    if len(hist) == 0:
+        forecast = np.zeros(horizon)
+    else:
+        last_week = hist[-7:] if len(hist) >= 7 else hist
+        forecast = [last_week[i % len(last_week)] for i in range(horizon)]
+    forecast = np.maximum(forecast, 0)
+    forecast_dates = [df["date"].max() + timedelta(days=i+1) for i in range(horizon)]
+    return forecast_dates, forecast
+
+def xgboost_forecast(model, le, df, horizon, store_id, family):
+    """Predict using XGBoost with exact feature order from training."""
+    # Get last known sales
+    last_sales = df["sales"].iloc[-1]
     
     # Encode family
     try:
         family_encoded = le.transform([family])[0]
     except:
+        # Fallback: use 0 for unknown family
         family_encoded = 0
     
-    # Get store number (as integer)
-    store_nbr = int(store_id)
+    # Get other features from last row (or default values)
+    last_row = df.iloc[-1]
+    onpromotion = last_row.get("onpromotion", 0)
+    dcoilwtico = last_row.get("dcoilwtico", 0)
+    is_holiday = last_row.get("is_holiday", 0)
     
-    # Get last sales for lags
-    last_sales = last_row["sales"].values[0]
+    # Generate future dates
+    last_date = df["date"].max()
+    future_dates = [last_date + timedelta(days=i+1) for i in range(horizon)]
     
-    # Get other features from last row
-    onpromotion = last_row["onpromotion"].values[0] if "onpromotion" in last_row else 0
-    dcoilwtico = last_row["dcoilwtico"].values[0] if "dcoilwtico" in last_row else 0
-    is_holiday = last_row["is_holiday"].values[0] if "is_holiday" in last_row else 0
-    
-    # Build predictions for each future day
     predictions = []
-    for i in range(horizon):
-        # Future date features
-        future_date = future_dates[i]
+    for future_date in future_dates:
+        # Time features for the future date
         dayofweek = future_date.weekday()
         month = future_date.month
         year = future_date.year
         
-        # Feature array in the exact order the model expects
+        # Feature vector in the EXACT order the model expects
         features = [
-            store_nbr,           # store_nbr
-            family_encoded,      # family_encoded  
-            onpromotion,         # onpromotion
-            dcoilwtico,          # dcoilwtico
-            is_holiday,          # is_holiday
-            dayofweek,           # dayofweek
-            month,               # month
-            year,                # year
-            last_sales,          # lag_1 (use last known sales)
-            last_sales           # lag_7 (use last known sales)
+            int(store_id),      # store_nbr
+            family_encoded,     # family_encoded
+            onpromotion,        # onpromotion
+            dcoilwtico,         # dcoilwtico
+            is_holiday,         # is_holiday
+            dayofweek,          # dayofweek
+            month,              # month
+            year,               # year
+            last_sales,         # lag_1 (use last known sales)
+            last_sales          # lag_7 (use last known sales)
         ]
         
-        # Predict
         pred = model.predict([features])[0]
         predictions.append(max(0, pred))
     
     return future_dates, predictions
 
-def seasonal_forecast(df, horizon):
-    hist = df.tail(60)["sales"].values
-    if len(hist) == 0:
-        forecast = [0] * horizon
-    else:
-        last_week = hist[-7:] if len(hist) >= 7 else hist
-        forecast = [last_week[i % len(last_week)] for i in range(horizon)]
-    forecast_dates = [df["date"].max() + timedelta(days=i+1) for i in range(horizon)]
-    return forecast_dates, forecast
-
 def main():
     st.title("🏬 Store Sales Forecasting Dashboard")
     st.caption(f"Data last loaded: {st.session_state.last_update.strftime('%Y-%m-%d %H:%M')}")
     
-    # Load model
-    model, le = load_model_and_encoder()
+    # Load model and encoder
+    model = load_model()
+    le = load_encoder()
     
     with st.spinner("Loading data..."):
         train, test, transactions = load_all_data()
@@ -224,20 +228,23 @@ def main():
         st.error("No data for these filters.")
         st.stop()
     
-    # Generate forecast
-    use_xgboost = False
+    # Generate forecast using XGBoost if available
     if model is not None and le is not None:
         try:
-            forecast_dates, forecast_values = make_forecast(model, le, df_filtered, horizon, selected_store, selected_family)
-            use_xgboost = True
-            st.success("✅ Using XGBoost model for forecasts")
+            forecast_dates, forecast_values = xgboost_forecast(
+                model, le, df_filtered, horizon, selected_store, selected_family
+            )
+            st.success("🚀 Using XGBoost model for forecasts")
+            model_active = True
         except Exception as e:
-            st.error(f"XGBoost failed: {e}")
-            forecast_dates, forecast_values = seasonal_forecast(df_filtered, horizon)
-            st.info("ℹ️ Using seasonal forecast (fallback)")
+            st.error(f"XGBoost prediction failed: {e}")
+            forecast_dates, forecast_values = seasonal_naive_forecast(df_filtered, horizon)
+            st.info("ℹ️ Using seasonal naive forecast (XGBoost error)")
+            model_active = False
     else:
-        forecast_dates, forecast_values = seasonal_forecast(df_filtered, horizon)
-        st.info("ℹ️ Using seasonal forecast (XGBoost model not found)")
+        forecast_dates, forecast_values = seasonal_naive_forecast(df_filtered, horizon)
+        st.info("ℹ️ Using seasonal naive forecast (XGBoost model not available)")
+        model_active = False
     
     # KPIs
     total_sales = df_filtered["sales"].sum()
@@ -263,36 +270,70 @@ def main():
     fig.update_layout(height=500, hovermode="x unified")
     st.plotly_chart(fig, width='stretch')
     
-    # Tabs (simplified)
-    st.subheader("🔬 Analytics")
-    tab1, tab2 = st.tabs(["Store Performance", "Feature Importance"])
+    # Analytics tabs
+    st.subheader("🔬 Advanced Analytics")
+    tab1, tab2, tab3 = st.tabs(["Store Performance", "Feature Importance", "Holiday Impact"])
     
     with tab1:
         store_perf = train.groupby("store_id")["sales"].sum().sort_values(ascending=False).head(5)
         fig_store = px.bar(x=store_perf.values, y=store_perf.index, orientation="h", title="Top 5 Stores")
         st.plotly_chart(fig_store, width='stretch')
+        family_perf = train.groupby("family")["sales"].sum().sort_values(ascending=False).head(5)
+        fig_fam = px.bar(x=family_perf.values, y=family_perf.index, orientation="h", title="Top 5 Families")
+        st.plotly_chart(fig_fam, width='stretch')
     
     with tab2:
-        if use_xgboost and model is not None:
-            feature_names = ['store_nbr', 'family_encoded', 'onpromotion', 'dcoilwtico', 'is_holiday', 'dayofweek', 'month', 'year', 'lag_1', 'lag_7']
-            imp_df = pd.DataFrame({"feature": feature_names, "importance": model.feature_importances_}).sort_values("importance", ascending=False)
-            fig_imp = px.bar(imp_df.head(10), x="importance", y="feature", orientation="h", title="Feature Importances")
+        if model_active and model is not None and hasattr(model, 'feature_importances_'):
+            feature_names = ['store_nbr', 'family_encoded', 'onpromotion', 'dcoilwtico', 
+                             'is_holiday', 'dayofweek', 'month', 'year', 'lag_1', 'lag_7']
+            imp_df = pd.DataFrame({
+                'feature': feature_names,
+                'importance': model.feature_importances_
+            }).sort_values('importance', ascending=False)
+            fig_imp = px.bar(imp_df.head(10), x='importance', y='feature', orientation='h', title='Top 10 Feature Importances')
             st.plotly_chart(fig_imp, width='stretch')
         else:
-            st.info("Feature importance will appear when XGBoost model is loaded.")
+            st.info("Feature importance will appear when XGBoost model is successfully loaded.")
     
-    # Inventory
+    with tab3:
+        if analyze_holidays:
+            holiday_group = df_filtered.groupby("is_holiday")["sales"].mean()
+            fig_hol = px.bar(x=holiday_group.index, y=holiday_group.values, 
+                           labels={"x": "Holiday", "y": "Avg Sales"},
+                           title="Holiday vs Non‑Holiday Sales",
+                           color=holiday_group.index.astype(str),
+                           color_discrete_map={"0": "gray", "1": "orange"})
+            st.plotly_chart(fig_hol, width='stretch')
+        else:
+            st.info("Holiday analysis disabled.")
+    
+    # Inventory Recommendations
     st.subheader("📦 Inventory Recommendations")
-    reorder = np.mean(forecast_values) * 7 + 1.5 * np.std(forecast_values) * np.sqrt(7)
-    st.metric("Reorder Point", f"{int(reorder)} units")
-    st.warning(f"⚠️ Maintain inventory above {int(reorder)} units")
+    reorder_point = np.mean(forecast_values) * 7 + 1.5 * np.std(forecast_values) * np.sqrt(7)
+    safety_stock = 1.5 * np.std(forecast_values) * np.sqrt(7)
+    col_a, col_b, col_c = st.columns(3)
+    col_a.metric("Reorder Point (units)", f"{int(reorder_point)}")
+    col_b.metric("Safety Stock (units)", f"{int(safety_stock)}")
+    col_c.metric("Avg Daily Forecast", f"{np.mean(forecast_values):.1f}")
+    st.warning(f"⚠️ Maintain inventory above **{int(reorder_point)}** units to avoid stockouts.")
+    
+    # Next 7 days breakdown
+    st.subheader("📅 Next 7 Days Forecast")
+    next_7 = pd.DataFrame({
+        "Date": forecast_dates[:7],
+        "Forecast Sales": forecast_values[:7]
+    })
+    next_7["Day of Week"] = next_7["Date"].dt.day_name()
+    st.dataframe(next_7.style.highlight_max(color="lightgreen", subset=["Forecast Sales"]), width='stretch')
     
     # Export
     with st.expander("📥 Export Forecast"):
-        export_df = pd.DataFrame({"Date": forecast_dates, "Forecast": forecast_values})
-        st.dataframe(export_df)
-        csv = export_df.to_csv(index=False).encode()
+        full = pd.DataFrame({"Date": forecast_dates, "Forecast": forecast_values})
+        st.dataframe(full, width='stretch')
+        csv = full.to_csv(index=False).encode("utf-8")
         st.download_button("Download CSV", csv, "forecast.csv", "text/csv")
+    
+    st.caption(f"Dashboard generated at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 if __name__ == "__main__":
     main()
